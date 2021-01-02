@@ -49,7 +49,7 @@ except:
 
 def get_dupes(plex_section_name):
     sec_type = get_section_type(plex_section_name)
-    dupe_search_results = plex.library.section(plex_section_name).search(duplicate=True, libtype=sec_type)
+    dupe_search_results = plex.library.section(plex_section_name).search(libtype=sec_type, duplicate=True)
     dupe_search_results_new = dupe_search_results.copy()
 
     # filter out duplicates that do not have exact file path/name
@@ -117,6 +117,27 @@ def get_score(media_info):
         log.debug("Added %d to score for total file size", int(media_info['file_size']) / 100000)
     return int(score)
 
+def get_best_multi_language_items(items, languages):
+    langDict = {lang: [k for k, v in items.items() if lang in v['languageCodes']] for lang in languages}
+    invertedLangDict = reverise_dict(langDict)
+    itemDict = collections.OrderedDict(
+                    sorted(invertedLangDict.items(),
+                           key=lambda x: (len(x[1]), items[x[0]]['score']), reverse=True))
+    if not itemDict:
+        return []
+
+    bestItem = list(itemDict.items())[0]
+    remainingLanguages = set(languages).difference(set(bestItem[1]))
+
+    return [items[bestItem[0]]] + get_best_multi_language_items(items, list(remainingLanguages))
+
+def reverise_dict(dict):
+    reversed_dict = {}
+    for key, value in dict.items():
+        for obj in value:
+            reversed_dict.setdefault(obj, []).append(key)
+
+    return reversed_dict
 
 def get_media_info(item):
     info = {
@@ -131,7 +152,8 @@ def get_media_info(item):
         'video_duration': 0,
         'file': [],
         'multipart': False,
-        'file_size': 0
+        'file_size': 0,
+        'languageCodes': []
     }
     # get id
     try:
@@ -186,6 +208,18 @@ def get_media_info(item):
 
     except AttributeError:
         log.debug("Media item has no audioChannels")
+
+    # get languages
+    try:
+        for part in item.parts:
+            for stream in part.audioStreams():
+                if stream.languageCode:
+                    log.debug("Added %s language for %s audioStream", stream.languageCode,
+                              stream.title if stream.title else 'Unknown')
+                    info['languageCodes'].append(stream.languageCode)
+
+    except AttributeError:
+        log.debug("Language could not get")
 
     # is this a multi part (cd1/cd2)
     if len(item.parts) > 1:
@@ -290,7 +324,7 @@ def kbps_to_string(size_kbps):
 
 def build_tabulated(parts, items):
     headers = ['choice', 'score', 'id', 'file', 'size', 'duration', 'bitrate', 'resolution',
-               'codecs']
+               'codecs', 'languages']
     if cfg.FIND_DUPLICATE_FILEPATHS_ONLY:
         headers.remove('score')
 
@@ -320,6 +354,8 @@ def build_tabulated(parts, items):
             elif 'codecs' in k:
                 tmp.append("%s, %s x %d" % (parts[item_id]['video_codec'], parts[item_id]['audio_codec'],
                                             parts[item_id]['audio_channels']))
+            elif 'languages' in k:
+                tmp.append(parts[item_id]['languageCodes'])
         part_data.append(tmp)
     return headers, part_data
 
@@ -365,6 +401,10 @@ if __name__ == "__main__":
 
             log.info("Processing: %r", title)
             # loop returned parts for media item (copy 1, copy 2...)
+
+            if cfg.MULTI_LANGUAGE:
+                item.reload()
+
             parts = {}
             for part in item.media:
                 part_info = get_media_info(part)
@@ -395,25 +435,32 @@ if __name__ == "__main__":
                 sort_order_reverse = True
 
             media_items = {}
-            best_item = None
+            best_items = []
             pos = 0
 
-            for media_id, part_info in collections.OrderedDict(
-                    sorted(parts.items(), key=lambda x: x[1][sort_key], reverse=sort_order_reverse)).items():
+            orderedItems = collections.OrderedDict(
+                    sorted(parts.items(), key=lambda x: x[1][sort_key], reverse=sort_order_reverse))
+
+            for media_id, part_info in orderedItems.items():
                 pos += 1
                 if pos == 1:
-                    best_item = part_info
+                    best_items = [part_info]
                 media_items[pos] = media_id
                 partz[media_id] = part_info
+
+            if cfg.MULTI_LANGUAGE and not cfg.FIND_DUPLICATE_FILEPATHS_ONLY:
+                best_items = get_best_multi_language_items(orderedItems, cfg.MULTI_LANGUAGE)
 
             headers, data = build_tabulated(partz, media_items)
             print(tabulate(data, headers=headers))
 
             keep_item = input("\nChoose item to keep (0 or s = skip | 1 or b = best): ")
-            if (keep_item.lower() != 's') and (keep_item.lower() == 'b' or 0 < int(keep_item) <= len(media_items)):
+            if (keep_item == ''):
+                print("Unexpected response, skipping deletion(s) for %r" % item)
+            elif (keep_item.lower() != 's') and (keep_item.lower() == 'b' or 0 < int(keep_item) <= len(media_items)):
                 write_decision(title=item)
                 for media_id, part_info in parts.items():
-                    if keep_item.lower() == 'b' and best_item is not None and best_item == part_info:
+                    if keep_item.lower() == 'b' and best_items and part_info in best_items:
                         print("\tKeeping  : %r" % media_id)
                         write_decision(keeping=part_info)
                     elif keep_item.lower() != 'b' and len(media_items) and media_id == media_items[int(keep_item)]:
@@ -432,29 +479,31 @@ if __name__ == "__main__":
             # auto delete
             print("\nDetermining best media item to keep for %r ..." % item)
             keep_score = 0
-            keep_id = None
+            keep_ids = []
 
             if cfg.FIND_DUPLICATE_FILEPATHS_ONLY:
                 # select lowest id to keep
                 for media_id, part_info in parts.items():
-                    if keep_score == 0 and keep_id is None:
+                    if keep_score == 0 and not keep_ids:
                         keep_score = int(part_info['id'])
-                        keep_id = media_id
+                        keep_ids = [media_id]
                     elif int(part_info['id']) < keep_score:
                         keep_score = part_info['id']
-                        keep_id = media_id
+                        keep_ids = [media_id]
             else:
                 # select highest score to keep
-                for media_id, part_info in parts.items():
-                    if int(part_info['score']) > keep_score:
-                        keep_score = part_info['score']
-                        keep_id = media_id
+                orderedItems = collections.OrderedDict(
+                    sorted(parts.items(), key=lambda x: x[1]["score"], reverse=True))
+                keep_ids = [list(orderedItems.items())[0][0]]
 
-            if keep_id:
+                if cfg.MULTI_LANGUAGE:
+                    keep_ids = [item['id'] for item in get_best_multi_language_items(orderedItems, cfg.MULTI_LANGUAGE)]
+
+            if keep_ids:
                 # delete other items
                 write_decision(title=item)
                 for media_id, part_info in parts.items():
-                    if media_id == keep_id:
+                    if media_id in keep_ids:
                         print("\tKeeping  : %r - %r" % (media_id, part_info['file']))
                         write_decision(keeping=part_info)
                     else:
