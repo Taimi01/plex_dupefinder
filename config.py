@@ -4,6 +4,7 @@
 import json
 import os
 import sys
+import getopt
 
 from attrdict import AttrDict
 from plexapi.myplex import MyPlexAccount
@@ -87,36 +88,36 @@ def prefilled_default_config(configs):
     return default_config
 
 
-def build_config():
+def build_config(options):
     if not os.path.exists(config_path):
         print("Dumping default config to: %s" % config_path)
 
         configs = dict(url='', token='', auto_delete=False)
 
-        # Get URL
-        configs['url'] = input("Plex Server URL: ")
+        if any([opt in options for opt in ['-d', '--dumpConfig']]):
+            # Get URL
+            configs['url'] = input("Plex Server URL: ")
 
-        # Get Credentials for plex.tv
-        user = input("Plex Username: ")
-        password = getpass('Plex Password: ')
+            # Get Credentials for plex.tv
+            user = input("Plex Username: ")
+            password = getpass('Plex Password: ')
 
-        # Get choice for Auto Deletion
-        auto_del = input("Auto Delete duplicates? [y/n]: ")
-        while auto_del.strip().lower() not in ['y', 'n']:
+            # Get choice for Auto Deletion
             auto_del = input("Auto Delete duplicates? [y/n]: ")
-            if auto_del.strip().lower() == 'y':
-                configs['auto_delete'] = True
-            elif auto_del.strip().lower() == 'n':
-                configs['auto_delete'] = False
+            while auto_del.strip().lower() not in ['y', 'n']:
+                auto_del = input("Auto Delete duplicates? [y/n]: ")
+                if auto_del.strip().lower() == 'y':
+                    configs['auto_delete'] = True
+                elif auto_del.strip().lower() == 'n':
+                    configs['auto_delete'] = False
 
-        account = MyPlexAccount(user, password)
-        configs['token'] = account.authenticationToken
+            account = MyPlexAccount(user, password)
+            configs['token'] = account.authenticationToken
 
         with open(config_path, 'w') as fp:
             json.dump(prefilled_default_config(configs), fp, sort_keys=True, indent=2)
 
         return True
-
     else:
         return False
 
@@ -174,8 +175,14 @@ def upgrade_settings(defaults, currents):
 # LOAD CFG
 ############################################################
 
+# load arguments
+try:
+    opts, args = getopt.getopt(sys.argv[1:], "d", ["dumpConfig"])
+except getopt.GetoptError:
+    sys.exit(2)
+
 # dump/load config
-if build_config():
+if build_config(opts):
     print("Please edit the default configuration before running again!")
     sys.exit(0)
 else:
