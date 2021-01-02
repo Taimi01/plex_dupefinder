@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-
-
+import argparse
 import json
 import os
 import sys
@@ -10,7 +9,12 @@ from attrdict import AttrDict
 from plexapi.myplex import MyPlexAccount
 from getpass import getpass
 
-config_path = os.path.join(os.path.dirname(os.path.realpath(sys.argv[0])), 'config.json')
+parser = argparse.ArgumentParser(description='plex_dupefinder')
+parser.add_argument('--config', dest='config', default=os.path.dirname(os.path.realpath(sys.argv[0]))+'/config.json', help='set custom config location')
+parser.add_argument('-d', '--dumpConfig', dest='dump', action="store_true", help='dump default config if not exist')
+args = parser.parse_args()
+
+config_path = os.path.join(os.path.dirname(os.path.realpath(args.config)), os.path.split(args.config)[1])
 base_config = {
     'PLEX_SERVER': 'https://plex.your-server.com',
     'PLEX_TOKEN': '',
@@ -94,7 +98,7 @@ def build_config(options):
 
         configs = dict(url='', token='', auto_delete=False)
 
-        if any([opt in options for opt in ['-d', '--dumpConfig']]):
+        if not args.dump:
             # Get URL
             configs['url'] = input("Plex Server URL: ")
 
@@ -175,14 +179,8 @@ def upgrade_settings(defaults, currents):
 # LOAD CFG
 ############################################################
 
-# load arguments
-try:
-    opts, args = getopt.getopt(sys.argv[1:], "d", ["dumpConfig"])
-except getopt.GetoptError:
-    sys.exit(2)
-
 # dump/load config
-if build_config(opts):
+if build_config(args):
     print("Please edit the default configuration before running again!")
     sys.exit(0)
 else:

@@ -7,4 +7,4 @@ RUN pip install -r requirements.txt
 
 COPY . .
 
-CMD ["python", "/app/plex_dupefinder.py", "-d"]
+CMD ["python", "/app/plex_dupefinder.py", "-d", "--config=config/config.json"]
